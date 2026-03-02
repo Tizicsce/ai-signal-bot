@@ -229,6 +229,46 @@ class PaperTradingBotWithTelegram:
         print(f"🎯 {tp_level} hit: {symbol} @ ${current_price:.2f}")
         self.save_state()
     
+    def send_daily_summary(self):
+        """إرسال ملخص يومي"""
+        # Calculate stats
+        total_trades = len([t for t in self.trade_history if t['type'] == 'CLOSE'])
+        winning_trades = len([t for t in self.trade_history if t['type'] == 'CLOSE' and t['pnl'] > 0])
+        losing_trades = len([t for t in self.trade_history if t['type'] == 'CLOSE' and t['pnl'] <= 0])
+        
+        total_pnl = sum(t['pnl'] for t in self.trade_history if t['type'] == 'CLOSE')
+        
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+        
+        # Current positions
+        open_positions_text = ""
+        if self.positions:
+            for symbol, pos in self.positions.items():
+                open_positions_text += f"\n📊 {symbol} {pos['type']} @ ${pos['entry']:.2f}"
+        else:
+            open_positions_text = "\n<i>لا صفقات مفتوحة</i>"
+        
+        message = f"""📊 <b>DAILY TRADING SUMMARY</b>
+
+💰 <b>Account:</b>
+• Balance: ${self.balance:,.2f}
+• Total P&L: ${total_pnl:+.2f}
+• Win Rate: {win_rate:.1f}%
+
+📈 <b>Trades:</b>
+• Total: {total_trades}
+• Wins: {winning_trades} ✅
+• Losses: {losing_trades} ❌
+
+🔄 <b>Open Positions:{open_positions_text}</b>
+
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+<i>📝 Paper Trading Summary</i>"""
+        
+        self.send_telegram(message)
+        print("📊 Daily summary sent")
+    
     def run(self, symbols=None, interval_minutes=5):
         """تشغيل البوت"""
         if symbols is None:
@@ -246,8 +286,16 @@ class PaperTradingBotWithTelegram:
 
 <i>📝 Trading with virtual money</i>""")
         
+        last_summary_day = datetime.now().day
+        
         while True:
-            print(f"\n🔍 {datetime.now().strftime('%H:%M:%S')}")
+            current_time = datetime.now()
+            print(f"\n🔍 {current_time.strftime('%H:%M:%S')}")
+            
+            # Send daily summary at midnight
+            if current_time.day != last_summary_day:
+                self.send_daily_summary()
+                last_summary_day = current_time.day
             
             for symbol in symbols:
                 try:
