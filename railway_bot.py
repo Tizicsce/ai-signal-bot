@@ -172,10 +172,10 @@ class PaperTradingBotWithTelegram:
                 self.close_position(symbol, current_price, 'TP3')
             elif current_price >= pos['tp2'] and not pos.get('tp2_hit'):
                 pos['tp2_hit'] = True
-                print(f"🎯 TP2 hit: {symbol}")
+                self.send_tp_hit_notification(symbol, 'TP2', current_price, pos)
             elif current_price >= pos['tp1'] and not pos.get('tp1_hit'):
                 pos['tp1_hit'] = True
-                print(f"🎯 TP1 hit: {symbol}")
+                self.send_tp_hit_notification(symbol, 'TP1', current_price, pos)
         else:  # SELL
             if current_price >= pos['sl']:
                 self.close_position(symbol, current_price, 'SL')
@@ -183,10 +183,51 @@ class PaperTradingBotWithTelegram:
                 self.close_position(symbol, current_price, 'TP3')
             elif current_price <= pos['tp2'] and not pos.get('tp2_hit'):
                 pos['tp2_hit'] = True
-                print(f"🎯 TP2 hit: {symbol}")
+                self.send_tp_hit_notification(symbol, 'TP2', current_price, pos)
             elif current_price <= pos['tp1'] and not pos.get('tp1_hit'):
                 pos['tp1_hit'] = True
-                print(f"🎯 TP1 hit: {symbol}")
+                self.send_tp_hit_notification(symbol, 'TP1', current_price, pos)
+    
+    def send_tp_hit_notification(self, symbol, tp_level, current_price, pos):
+        """إرسال إشعار عند الوصول لـ TP"""
+        entry = pos['entry']
+        signal_type = pos['type']
+        tp1 = pos['tp1']
+        tp2 = pos['tp2']
+        tp3 = pos['tp3']
+        sl = pos['sl']
+        
+        # Calculate P&L so far
+        amount = pos['amount']
+        if signal_type == 'BUY':
+            pnl = (current_price - entry) * amount
+        else:
+            pnl = (entry - current_price) * amount
+        pnl_percent = (pnl / (entry * amount)) * 100
+        
+        tp_emoji = '🥇' if tp_level == 'TP1' else '🥈'
+        
+        message = f"""{tp_emoji} <b>TARGET HIT - {tp_level}</b> {tp_emoji}
+
+📊 <b>{symbol}</b> | {signal_type}
+
+💰 Entry: <code>${entry:,.2f}</code>
+💰 Current: <code>${current_price:,.2f}</code>
+
+📈 <b>P&L so far:</b>
+💵 ${pnl:,.2f} ({pnl_percent:+.2f}%)
+
+🎯 <b>Progress:</b>
+🥇 TP1: ${tp1:,.2f} {'✅' if tp_level in ['TP1', 'TP2', 'TP3'] else '⏳'}
+🥈 TP2: ${tp2:,.2f} {'✅' if tp_level in ['TP2', 'TP3'] else '⏳'}
+🥉 TP3: ${tp3:,.2f} {'✅' if tp_level == 'TP3' else '⏳'}
+🛑 SL: ${sl:,.2f}
+
+<i>📝 Waiting for next target...</i>"""
+        
+        self.send_telegram(message)
+        print(f"🎯 {tp_level} hit: {symbol} @ ${current_price:.2f}")
+        self.save_state()
     
     def run(self, symbols=None, interval_minutes=5):
         """تشغيل البوت"""
