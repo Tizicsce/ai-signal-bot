@@ -3,7 +3,7 @@ import json
 import time
 from datetime import datetime
 
-class AISignalBotAdvanced:
+class AISignalBotPro:
     """
     Advanced Trading Strategy
     ICT + SMA + Order Flow + Market Structure
