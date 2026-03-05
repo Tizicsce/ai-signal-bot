@@ -9,15 +9,16 @@ from ai_signal_bot_pro import AISignalBotPro
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8439293396:AAHAkRFRAkgLmU17M4I8_LPXocAezDvQxE0')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '5580867960')
 
-class PaperTradingBotWithTelegram:
-    """Paper Trading Bot مع Telegram Notifications"""
+class PaperTradingBotWithLeverage:
+    """Paper Trading Bot مع Leverage + Long/Short"""
     
-    def __init__(self, initial_balance=10000):
+    def __init__(self, initial_balance=10000, default_leverage=5):
         self.bot = AISignalBotPro()
         self.balance = initial_balance
         self.positions = {}
         self.trade_history = []
         self.initial_balance = initial_balance
+        self.default_leverage = default_leverage  # x5 leverage
         self.load_state()
     
     def send_telegram(self, message):
@@ -59,39 +60,63 @@ class PaperTradingBotWithTelegram:
         except:
             pass
     
-    def open_position(self, symbol, signal_data):
-        """فتح صفقة"""
+    def open_position(self, symbol, signal_data, leverage=None):
+        """فتح صفقة مع Leverage"""
         if symbol in self.positions:
             return False
         
+        if leverage is None:
+            leverage = self.default_leverage
+        
         price = signal_data['price']
-        signal_type = signal_data['signal']
+        signal_type = signal_data['signal']  # BUY = Long, SELL = Short
         
-        # Calculate TP/SL (2%, 4%, 6% / -2% SL)
-        if signal_type == 'BUY':
-            tp1, tp2, tp3, sl = price * 1.02, price * 1.04, price * 1.06, price * 0.98
-        else:
-            tp1, tp2, tp3, sl = price * 0.98, price * 0.96, price * 0.94, price * 1.02
+        # Calculate TP/SL with leverage effect
+        # TP: 2%, 4%, 6% | SL: -2%
+        if signal_type == 'BUY':  # Long
+            tp1 = price * 1.02
+            tp2 = price * 1.04
+            tp3 = price * 1.06
+            sl = price * 0.98
+        else:  # Short
+            tp1 = price * 0.98
+            tp2 = price * 0.96
+            tp3 = price * 0.94
+            sl = price * 1.02
         
-        # Position size (10% of balance)
-        position_value = min(self.balance * 0.10, 1000)
+        # Position size with leverage
+        # With 5x leverage, $1000 position = $200 margin
+        position_value = min(self.balance * 0.10, 1000)  # $1000 position
+        margin_required = position_value / leverage  # $200 margin for 5x
         amount = position_value / price
         
         self.positions[symbol] = {
-            'entry': price, 'amount': amount, 'type': signal_type,
-            'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'sl': sl,
+            'entry': price,
+            'amount': amount,
+            'type': signal_type,  # BUY/SELL (Long/Short)
+            'leverage': leverage,
+            'margin': margin_required,
+            'position_value': position_value,
+            'tp1': tp1,
+            'tp2': tp2,
+            'tp3': tp3,
+            'sl': sl,
             'opened_at': datetime.now().isoformat()
         }
         
-        self.balance -= position_value
+        self.balance -= margin_required  # Only deduct margin, not full position
         
         # Send Telegram
         emoji = '🟢' if signal_type == 'BUY' else '🔴'
-        message = f"""{emoji} <b>PAPER TRADE OPENED</b> {emoji}
+        direction = 'LONG' if signal_type == 'BUY' else 'SHORT'
+        
+        message = f"""{emoji} <b>PAPER TRADE OPENED - {direction}</b> {emoji}
 
-📊 <b>{symbol}</b> | {signal_type}
+📊 <b>{symbol}</b> | {direction} x{leverage}
 💰 Entry: <code>${price:,.2f}</code>
-💵 Size: ${position_value:,.2f}
+💵 Position Size: ${position_value:,.2f}
+🔷 Margin Used: ${margin_required:,.2f}
+⚡ Leverage: x{leverage}
 📦 Amount: {amount:.4f} {symbol}
 
 🎯 <b>Targets:</b>
@@ -101,55 +126,68 @@ class PaperTradingBotWithTelegram:
 
 🛑 SL: ${sl:,.2f}
 
-💼 Balance: ${self.balance:,.2f}
+💼 Available Balance: ${self.balance:,.2f}
 ⏰ {datetime.now().strftime('%H:%M:%S')}
 
-<i>📝 Paper Trading - Not Real Money</i>"""
+<i>📝 Paper Trading with Leverage</i>"""
         
         self.send_telegram(message)
-        print(f"🟢 OPENED {signal_type} {symbol} @ ${price:.2f}")
+        print(f"🟢 OPENED {direction} {symbol} x{leverage} @ ${price:.2f}")
         
         self.save_state()
         return True
     
     def close_position(self, symbol, exit_price, reason):
-        """إغلاق صفقة"""
+        """إغلاق صفقة مع حساب Leverage"""
         if symbol not in self.positions:
             return
         
         pos = self.positions[symbol]
-        entry, amount, signal_type = pos['entry'], pos['amount'], pos['type']
+        entry = pos['entry']
+        amount = pos['amount']
+        signal_type = pos['type']
+        leverage = pos['leverage']
+        margin = pos['margin']
+        position_value = pos['position_value']
         
-        # Calculate P&L
-        if signal_type == 'BUY':
-            pnl = (exit_price - entry) * amount
-        else:
-            pnl = (entry - exit_price) * amount
+        # Calculate P&L with leverage
+        # Price change % * leverage = actual P&L %
+        if signal_type == 'BUY':  # Long
+            price_change_pct = (exit_price - entry) / entry
+        else:  # Short
+            price_change_pct = (entry - exit_price) / entry
         
-        position_value = entry * amount
-        pnl_percent = (pnl / position_value) * 100
+        # Apply leverage
+        leveraged_change_pct = price_change_pct * leverage
+        pnl = position_value * leveraged_change_pct
         
-        # Update balance
-        self.balance += position_value + pnl
+        # Update balance (return margin + P&L)
+        self.balance += margin + pnl
         
         # Send Telegram
         emoji = '✅' if pnl > 0 else '❌'
-        message = f"""{emoji} <b>PAPER TRADE CLOSED</b> {emoji}
+        direction = 'LONG' if signal_type == 'BUY' else 'SHORT'
+        
+        message = f"""{emoji} <b>PAPER TRADE CLOSED - {direction}</b> {emoji}
 
-📊 <b>{symbol}</b> | {signal_type}
+📊 <b>{symbol}</b> | {direction} x{leverage}
 🔔 Reason: {reason}
 
 💰 Entry: <code>${entry:,.2f}</code>
 💰 Exit: <code>${exit_price:,.2f}</code>
 
-📈 <b>P&L:</b>
-💵 ${pnl:,.2f} ({pnl_percent:+.2f}%)
+📊 Price Change: {price_change_pct*100:+.2f}%
+⚡ With x{leverage} Leverage: {leveraged_change_pct*100:+.2f}%
 
+📈 <b>P&L:</b>
+💵 ${pnl:,.2f}
+
+💰 Margin Returned: ${margin:,.2f}
 💼 Balance: ${self.balance:,.2f}
 📊 Total P&L: ${self.balance - self.initial_balance:+.2f}
 ⏰ {datetime.now().strftime('%H:%M:%S')}
 
-<i>📝 Paper Trading - Not Real Money</i>"""
+<i>📝 Paper Trading with Leverage</i>"""
         
         self.send_telegram(message)
         print(f"{emoji} CLOSED {symbol} ({reason}) P&L: ${pnl:.2f}")
@@ -158,16 +196,19 @@ class PaperTradingBotWithTelegram:
         self.save_state()
     
     def check_positions(self, symbol, current_price):
-        """التحقق من TP/SL"""
+        """التحقق من TP/SL مع Leverage"""
         if symbol not in self.positions:
             return
         
         pos = self.positions[symbol]
         signal_type = pos['type']
+        leverage = pos['leverage']
         
-        if signal_type == 'BUY':
+        # Check SL first (more important with leverage!)
+        if signal_type == 'BUY':  # Long
             if current_price <= pos['sl']:
                 self.close_position(symbol, current_price, 'SL')
+                return
             elif current_price >= pos['tp3']:
                 self.close_position(symbol, current_price, 'TP3')
             elif current_price >= pos['tp2'] and not pos.get('tp2_hit'):
@@ -176,9 +217,11 @@ class PaperTradingBotWithTelegram:
             elif current_price >= pos['tp1'] and not pos.get('tp1_hit'):
                 pos['tp1_hit'] = True
                 self.send_tp_hit_notification(symbol, 'TP1', current_price, pos)
-        else:  # SELL
+        
+        else:  # Short
             if current_price >= pos['sl']:
                 self.close_position(symbol, current_price, 'SL')
+                return
             elif current_price <= pos['tp3']:
                 self.close_position(symbol, current_price, 'TP3')
             elif current_price <= pos['tp2'] and not pos.get('tp2_hit'):
@@ -189,33 +232,21 @@ class PaperTradingBotWithTelegram:
                 self.send_tp_hit_notification(symbol, 'TP1', current_price, pos)
     
     def send_tp_hit_notification(self, symbol, tp_level, current_price, pos):
-        """إرسال إشعار عند الوصول لـ TP"""
+        """إرسال إشعار TP"""
         entry = pos['entry']
         signal_type = pos['type']
-        tp1 = pos['tp1']
-        tp2 = pos['tp2']
-        tp3 = pos['tp3']
-        sl = pos['sl']
+        leverage = pos['leverage']
+        tp1, tp2, tp3, sl = pos['tp1'], pos['tp2'], pos['tp3'], pos['sl']
         
-        # Calculate P&L so far
-        amount = pos['amount']
-        if signal_type == 'BUY':
-            pnl = (current_price - entry) * amount
-        else:
-            pnl = (entry - current_price) * amount
-        pnl_percent = (pnl / (entry * amount)) * 100
-        
+        direction = 'LONG' if signal_type == 'BUY' else 'SHORT'
         tp_emoji = '🥇' if tp_level == 'TP1' else '🥈'
         
-        message = f"""{tp_emoji} <b>TARGET HIT - {tp_level}</b> {tp_emoji}
+        message = f"""{tp_emoji} <b>TARGET HIT - {tp_level} - {direction}</b> {tp_emoji}
 
-📊 <b>{symbol}</b> | {signal_type}
+📊 <b>{symbol}</b> | {direction} x{leverage}
 
 💰 Entry: <code>${entry:,.2f}</code>
 💰 Current: <code>${current_price:,.2f}</code>
-
-📈 <b>P&L so far:</b>
-💵 ${pnl:,.2f} ({pnl_percent:+.2f}%)
 
 🎯 <b>Progress:</b>
 🥇 TP1: ${tp1:,.2f} {'✅' if tp_level in ['TP1', 'TP2', 'TP3'] else '⏳'}
@@ -231,12 +262,13 @@ class PaperTradingBotWithTelegram:
     
     def send_daily_summary(self):
         """إرسال ملخص يومي"""
-        # Calculate stats
-        total_trades = len([t for t in self.trade_history if t['type'] == 'CLOSE'])
-        winning_trades = len([t for t in self.trade_history if t['type'] == 'CLOSE' and t['pnl'] > 0])
-        losing_trades = len([t for t in self.trade_history if t['type'] == 'CLOSE' and t['pnl'] <= 0])
+        # Calculate stats - FIXED: use .get() to avoid KeyError
+        closed_trades = [t for t in self.trade_history if t.get('type') == 'CLOSE']
+        total_trades = len(closed_trades)
+        winning_trades = len([t for t in closed_trades if t.get('pnl', 0) > 0])
+        losing_trades = len([t for t in closed_trades if t.get('pnl', 0) <= 0])
         
-        total_pnl = sum(t['pnl'] for t in self.trade_history if t['type'] == 'CLOSE')
+        total_pnl = sum(t.get('pnl', 0) for t in closed_trades)
         
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
         
@@ -244,7 +276,8 @@ class PaperTradingBotWithTelegram:
         open_positions_text = ""
         if self.positions:
             for symbol, pos in self.positions.items():
-                open_positions_text += f"\n📊 {symbol} {pos['type']} @ ${pos['entry']:.2f}"
+                direction = 'LONG' if pos['type'] == 'BUY' else 'SHORT'
+                open_positions_text += f"\n📊 {symbol} {direction} x{pos['leverage']} @ ${pos['entry']:.2f}"
         else:
             open_positions_text = "\n<i>لا صفقات مفتوحة</i>"
         
@@ -255,7 +288,7 @@ class PaperTradingBotWithTelegram:
 • Total P&L: ${total_pnl:+.2f}
 • Win Rate: {win_rate:.1f}%
 
-📈 <b>Trades:</b>
+📈 <b>Trades Today:</b>
 • Total: {total_trades}
 • Wins: {winning_trades} ✅
 • Losses: {losing_trades} ❌
@@ -267,35 +300,29 @@ class PaperTradingBotWithTelegram:
 <i>📝 Paper Trading Summary</i>"""
         
         self.send_telegram(message)
-        print("📊 Daily summary sent")
+        print(f"📊 Daily summary sent: {total_trades} trades")
     
     def run(self, symbols=None, interval_minutes=5):
         """تشغيل البوت"""
         if symbols is None:
             symbols = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP']
         
-        print("🤖 PAPER TRADING BOT WITH TELEGRAM")
-        print(f"💰 Paper Balance: ${self.balance:,.2f}")
+        print("🤖 PAPER TRADING BOT WITH LEVERAGE")
+        print(f"💰 Balance: ${self.balance:,.2f}")
+        print(f"⚡ Default Leverage: x{self.default_leverage}")
         
         # Startup message
         self.send_telegram(f"""🤖 <b>Paper Trading Bot Started</b>
 
 💰 Balance: ${self.balance:,.2f}
+⚡ Leverage: x{self.default_leverage}
 📊 Symbols: {', '.join(symbols)}
 ⏰ Interval: {interval_minutes} min
 
-<i>📝 Trading with virtual money</i>""")
-        
-        last_summary_day = datetime.now().day
+<i>📝 Long/Short with Leverage</i>""")
         
         while True:
-            current_time = datetime.now()
-            print(f"\n🔍 {current_time.strftime('%H:%M:%S')}")
-            
-            # Send daily summary at midnight
-            if current_time.day != last_summary_day:
-                self.send_daily_summary()
-                last_summary_day = current_time.day
+            print(f"\n🔍 {datetime.now().strftime('%H:%M:%S')}")
             
             for symbol in symbols:
                 try:
@@ -309,12 +336,13 @@ class PaperTradingBotWithTelegram:
                     if not signal:
                         continue
                     
-                    print(f"{symbol}: {signal['signal']} ({signal['confidence']}%)")
+                    direction = 'LONG' if signal['signal'] == 'BUY' else 'SHORT' if signal['signal'] == 'SELL' else 'HOLD'
+                    print(f"{symbol}: {direction} ({signal['confidence']}%)")
                     
                     # Open position
                     if signal['signal'] in ['BUY', 'SELL'] and signal['confidence'] >= 60:
                         if symbol not in self.positions:
-                            self.open_position(symbol, signal)
+                            self.open_position(symbol, signal, leverage=self.default_leverage)
                     
                 except Exception as e:
                     print(f"❌ {symbol}: {e}")
@@ -323,5 +351,6 @@ class PaperTradingBotWithTelegram:
             time.sleep(interval_minutes * 60)
 
 if __name__ == "__main__":
-    bot = PaperTradingBotWithTelegram(initial_balance=10000)
+    # Create bot with $10,000 and x5 leverage
+    bot = PaperTradingBotWithLeverage(initial_balance=10000, default_leverage=5)
     bot.run()
