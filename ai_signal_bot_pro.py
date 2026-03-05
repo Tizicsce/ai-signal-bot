@@ -3,8 +3,12 @@ import json
 import time
 from datetime import datetime
 
-class AISignalBotPro:
-    """AI Signal Bot مع ICT Strategy + SMA - محسن"""
+class AISignalBotAdvanced:
+    """
+    Advanced Trading Strategy
+    ICT + SMA + Order Flow + Market Structure
+    شرط: 4+ تأكيدات للدخول
+    """
     
     def __init__(self):
         self.binance_url = "https://api.binance.com/api/v3"
@@ -20,12 +24,15 @@ class AISignalBotPro:
                 'price': float(data['lastPrice']),
                 'change_24h': float(data['priceChangePercent']),
                 'volume': float(data['volume']),
+                'quote_volume': float(data['quoteVolume']),
                 'high': float(data['highPrice']),
                 'low': float(data['lowPrice']),
-                'open': float(data['openPrice'])
+                'open': float(data['openPrice']),
+                'bid_qty': float(data.get('bidQty', 0)),
+                'ask_qty': float(data.get('askQty', 0))
             }
         except Exception as e:
-            print(f"Error fetching {symbol}: {e}")
+            print(f"Error: {e}")
             return None
     
     def get_klines(self, symbol, interval='1h', limit=200):
@@ -44,11 +51,13 @@ class AISignalBotPro:
                     'high': float(k[2]),
                     'low': float(k[3]),
                     'close': float(k[4]),
-                    'volume': float(k[5])
+                    'volume': float(k[5]),
+                    'quote_volume': float(k[7]),
+                    'buy_volume': float(k[9]),  # Taker buy base volume
+                    'buy_quote': float(k[10])   # Taker buy quote volume
                 })
             return candles
-        except Exception as e:
-            print(f"Error fetching klines: {e}")
+        except:
             return []
     
     def calculate_sma(self, prices, period):
@@ -57,90 +66,172 @@ class AISignalBotPro:
             return None
         return sum(prices[-period:]) / period
     
+    def calculate_ema(self, prices, period):
+        """حساب EMA"""
+        if len(prices) < period:
+            return None
+        multiplier = 2 / (period + 1)
+        ema = prices[0]
+        for price in prices[1:]:
+            ema = (price - ema) * multiplier + ema
+        return ema
+    
     def calculate_rsi(self, prices, period=14):
         """حساب RSI"""
         if len(prices) < period + 1:
             return 50
-        
         deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
         gains = [d if d > 0 else 0 for d in deltas]
         losses = [-d if d < 0 else 0 for d in deltas]
-        
         avg_gain = sum(gains[-period:]) / period
         avg_loss = sum(losses[-period:]) / period
-        
         if avg_loss == 0:
             return 100
-        
         rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
+        return 100 - (100 / (1 + rs))
     
-    def calculate_atr(self, candles, period=14):
-        """حساب ATR (Average True Range)"""
-        if len(candles) < period + 1:
+    def calculate_macd(self, prices):
+        """حساب MACD"""
+        ema12 = self.calculate_ema(prices, 12)
+        ema26 = self.calculate_ema(prices, 26)
+        if not ema12 or not ema26:
+            return None, None
+        macd_line = ema12 - ema26
+        signal_line = self.calculate_ema([macd_line] * 9, 9)  # Simplified
+        return macd_line, signal_line
+    
+    # ========== ICT STRATEGY ==========
+    
+    def detect_fvg(self, candles):
+        """Fair Value Gaps"""
+        fvgs = []
+        for i in range(len(candles) - 2):
+            c1, c2, c3 = candles[i], candles[i+1], candles[i+2]
+            # Bullish FVG
+            if c3['low'] > c1['high']:
+                fvgs.append({'type': 'Bullish', 'top': c1['high'], 'bottom': c3['low'], 'index': i+1})
+            # Bearish FVG
+            elif c3['high'] < c1['low']:
+                fvgs.append({'type': 'Bearish', 'top': c1['low'], 'bottom': c3['high'], 'index': i+1})
+        return fvgs
+    
+    def detect_order_blocks(self, candles):
+        """Order Blocks"""
+        obs = []
+        for i in range(3, len(candles)):
+            c_before = candles[i-2]
+            c_current = candles[i]
+            # Bullish OB
+            if (c_before['close'] < c_before['open'] and 
+                c_current['close'] > c_before['high']):
+                obs.append({'type': 'Bullish', 'high': c_before['high'], 'low': c_before['low']})
+            # Bearish OB
+            elif (c_before['close'] > c_before['open'] and 
+                  c_current['close'] < c_before['low']):
+                obs.append({'type': 'Bearish', 'high': c_before['high'], 'low': c_before['low']})
+        return obs
+    
+    def detect_break_of_structure(self, candles):
+        """Break of Structure (BOS)"""
+        if len(candles) < 10:
             return None
         
-        tr_values = []
-        for i in range(1, len(candles)):
-            high = candles[i]['high']
-            low = candles[i]['low']
-            prev_close = candles[i-1]['close']
-            
-            tr1 = high - low
-            tr2 = abs(high - prev_close)
-            tr3 = abs(low - prev_close)
-            
-            tr_values.append(max(tr1, tr2, tr3))
+        recent = candles[-10:]
+        highs = [c['high'] for c in recent]
+        lows = [c['low'] for c in recent]
         
-        return sum(tr_values[-period:]) / period
+        current = candles[-1]
+        
+        # Bullish BOS: كسر أعلى high سابق
+        if current['close'] > max(highs[:-1]):
+            return 'BULLISH_BOS'
+        # Bearish BOS: كسر أقل low سابق
+        elif current['close'] < min(lows[:-1]):
+            return 'BEARISH_BOS'
+        return None
     
-    def check_trend(self, candles):
-        """التحقق من الاتجاه العام"""
-        if len(candles) < 50:
+    def detect_liquidity_sweep(self, candles):
+        """Liquidity Sweep"""
+        if len(candles) < 10:
+            return None
+        
+        recent = candles[-10:-1]
+        current = candles[-1]
+        
+        prev_high = max([c['high'] for c in recent])
+        prev_low = min([c['low'] for c in recent])
+        
+        # Bullish sweep
+        if current['low'] < prev_low and current['close'] > prev_low:
+            return {'type': 'Bullish', 'swept': prev_low, 'close': current['close']}
+        # Bearish sweep
+        elif current['high'] > prev_high and current['close'] < prev_high:
+            return {'type': 'Bearish', 'swept': prev_high, 'close': current['close']}
+        return None
+    
+    # ========== ORDER FLOW ==========
+    
+    def analyze_order_flow(self, candles):
+        """تحليل Order Flow"""
+        if len(candles) < 5:
+            return None
+        
+        recent = candles[-5:]
+        
+        # حساب delta (buy volume - sell volume)
+        total_buy = sum([c['buy_volume'] for c in recent])
+        total_vol = sum([c['volume'] for c in recent])
+        
+        buy_ratio = total_buy / total_vol if total_vol > 0 else 0.5
+        
+        # Volume analysis
+        avg_volume = sum([c['volume'] for c in candles[-20:]]) / 20
+        current_volume = recent[-1]['volume']
+        volume_spike = current_volume > avg_volume * 1.5
+        
+        return {
+            'buy_ratio': buy_ratio,
+            'volume_spike': volume_spike,
+            'delta_bullish': buy_ratio > 0.55,
+            'delta_bearish': buy_ratio < 0.45
+        }
+    
+    def analyze_market_structure(self, candles):
+        """تحليل بنية السوق"""
+        if len(candles) < 20:
             return 'NEUTRAL'
         
-        prices = [c['close'] for c in candles]
+        # Higher Highs & Higher Lows = Uptrend
+        highs = [c['high'] for c in candles[-20:]]
+        lows = [c['low'] for c in candles[-20:]]
         
-        sma20 = self.calculate_sma(prices, 20)
-        sma50 = self.calculate_sma(prices, 50)
+        hh = highs[-1] > max(highs[:10])
+        hl = lows[-1] > min(lows[:10])
         
-        if not sma20 or not sma50:
-            return 'NEUTRAL'
+        lh = highs[-1] < max(highs[:10])
+        ll = lows[-1] < min(lows[:10])
         
-        # Higher highs and higher lows = UPTREND
-        recent_highs = [c['high'] for c in candles[-20:]]
-        recent_lows = [c['low'] for c in candles[-20:]]
-        
-        higher_highs = recent_highs[-1] > max(recent_highs[:10])
-        higher_lows = recent_lows[-1] > min(recent_lows[:10])
-        
-        if sma20 > sma50 and higher_highs and higher_lows:
+        if hh and hl:
             return 'UPTREND'
-        elif sma20 < sma50 and not higher_highs and not higher_lows:
+        elif lh and ll:
             return 'DOWNTREND'
-        else:
-            return 'NEUTRAL'
+        return 'NEUTRAL'
     
-    def check_killzone(self):
-        """التحقق من Killzone"""
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
-        hour = now.hour
-        
-        # فقط London و NY (أعلى probability)
-        if 8 <= hour < 11:
-            return "London", True
-        elif 13 <= hour < 16:
-            return "New York", True
-        else:
-            return "Off-Hours", False
+    # ========== MAIN STRATEGY ==========
     
     def generate_signal(self, symbol, timeframe='1h'):
-        """توليد الإشارة مع تأكيدات متعددة"""
+        """
+        توليد الإشارة مع 4+ تأكيدات:
+        1. ICT (FVG, OB, BOS, Sweep)
+        2. SMA (9/21/50)
+        3. Order Flow
+        4. Market Structure
+        5. MACD
+        6. RSI
+        """
         
         ticker = self.get_price(symbol)
-        candles = self.get_klines(symbol, timeframe, 100)
+        candles = self.get_klines(symbol, timeframe, 200)
         
         if not ticker or len(candles) < 50:
             return None
@@ -150,72 +241,135 @@ class AISignalBotPro:
         
         # حساب المؤشرات
         rsi = self.calculate_rsi(prices)
-        atr = self.calculate_atr(candles)
-        trend = self.check_trend(candles)
-        killzone_name, in_killzone = self.check_killzone()
-        
         sma9 = self.calculate_sma(prices, 9)
         sma21 = self.calculate_sma(prices, 21)
+        sma50 = self.calculate_sma(prices, 50)
+        macd, macd_signal = self.calculate_macd(prices)
         
-        # قائمة التأكيدات
+        # ICT Analysis
+        fvgs = self.detect_fvg(candles[-30:])
+        obs = self.detect_order_blocks(candles[-30:])
+        bos = self.detect_break_of_structure(candles)
+        sweep = self.detect_liquidity_sweep(candles)
+        
+        # Order Flow & Structure
+        order_flow = self.analyze_order_flow(candles)
+        market_structure = self.analyze_market_structure(candles)
+        
+        # التأكيدات
         confirmations = []
         signal = 'HOLD'
         
-        # 1. التحقق من Killzone (إجباري)
-        if not in_killzone:
+        # ========== تحليل LONG ==========
+        long_confirmations = []
+        
+        # 1. Market Structure (أهم شي)
+        if market_structure == 'UPTREND':
+            long_confirmations.append("✅ UPTREND Structure")
+        
+        # 2. SMA Alignment
+        if sma9 and sma21 and sma50:
+            if sma9 > sma21 > sma50:
+                long_confirmations.append("✅ SMA Bullish (9>21>50)")
+        
+        # 3. MACD
+        if macd and macd_signal and macd > macd_signal and macd > 0:
+            long_confirmations.append("✅ MACD Bullish")
+        
+        # 4. RSI
+        if 40 < rsi < 65:
+            long_confirmations.append(f"✅ RSI Optimal ({rsi:.1f})")
+        
+        # 5. ICT - BOS
+        if bos == 'BULLISH_BOS':
+            long_confirmations.append("✅ Bullish BOS")
+        
+        # 6. ICT - Liquidity Sweep
+        if sweep and sweep['type'] == 'Bullish':
+            long_confirmations.append("✅ Bullish Liquidity Sweep")
+        
+        # 7. ICT - FVG
+        if fvgs and fvgs[-1]['type'] == 'Bullish':
+            long_confirmations.append("✅ Bullish FVG")
+        
+        # 8. ICT - Order Block
+        if obs and obs[-1]['type'] == 'Bullish':
+            long_confirmations.append("✅ Bullish Order Block")
+        
+        # 9. Order Flow
+        if order_flow:
+            if order_flow['delta_bullish'] and order_flow['volume_spike']:
+                long_confirmations.append("✅ Bullish Order Flow + Volume")
+        
+        # ========== تحليل SHORT ==========
+        short_confirmations = []
+        
+        # 1. Market Structure
+        if market_structure == 'DOWNTREND':
+            short_confirmations.append("✅ DOWNTREND Structure")
+        
+        # 2. SMA Alignment
+        if sma9 and sma21 and sma50:
+            if sma9 < sma21 < sma50:
+                short_confirmations.append("✅ SMA Bearish (9<21<50)")
+        
+        # 3. MACD
+        if macd and macd_signal and macd < macd_signal and macd < 0:
+            short_confirmations.append("✅ MACD Bearish")
+        
+        # 4. RSI
+        if 35 < rsi < 60:
+            short_confirmations.append(f"✅ RSI Optimal ({rsi:.1f})")
+        
+        # 5. ICT - BOS
+        if bos == 'BEARISH_BOS':
+            short_confirmations.append("✅ Bearish BOS")
+        
+        # 6. ICT - Liquidity Sweep
+        if sweep and sweep['type'] == 'Bearish':
+            short_confirmations.append("✅ Bearish Liquidity Sweep")
+        
+        # 7. ICT - FVG
+        if fvgs and fvgs[-1]['type'] == 'Bearish':
+            short_confirmations.append("✅ Bearish FVG")
+        
+        # 8. ICT - Order Block
+        if obs and obs[-1]['type'] == 'Bearish':
+            short_confirmations.append("✅ Bearish Order Block")
+        
+        # 9. Order Flow
+        if order_flow:
+            if order_flow['delta_bearish'] and order_flow['volume_spike']:
+                short_confirmations.append("✅ Bearish Order Flow + Volume")
+        
+        # ========== اختيار الإشارة ==========
+        
+        # شرط الدخول: 5+ تأكيدات
+        if len(long_confirmations) >= 5:
+            signal = 'BUY'
+            confirmations = long_confirmations
+        elif len(short_confirmations) >= 5:
+            signal = 'SELL'
+            confirmations = short_confirmations
+        else:
+            # لا إشارة
+            max_conf = max(len(long_confirmations), len(short_confirmations))
             return {
                 'timestamp': datetime.now().isoformat(),
                 'symbol': symbol,
                 'signal': 'HOLD',
-                'confidence': 0,
+                'confidence': max_conf * 10,
                 'price': current_price,
-                'rsi': round(rsi, 2),
-                'reasons': [f"⏰ Outside Killzone ({killzone_name}) - No trading"],
+                'reasons': [f"⚠️ Only {max_conf}/9 confirmations - Waiting"],
+                'long_score': len(long_confirmations),
+                'short_score': len(short_confirmations),
                 'confirmations': 0
             }
         
-        # 2. تحليل الاتجاه + RSI + SMA
-        # LONG Setup
-        if trend == 'UPTREND' and rsi < 60 and sma9 > sma21:
-            signal = 'BUY'
-            confirmations.append("✅ Uptrend confirmed")
-            confirmations.append(f"✅ RSI bullish ({rsi:.1f})")
-            confirmations.append("✅ SMA9 > SMA21")
-            
-        # SHORT Setup  
-        elif trend == 'DOWNTREND' and rsi > 40 and sma9 < sma21:
-            signal = 'SELL'
-            confirmations.append("✅ Downtrend confirmed")
-            confirmations.append(f"✅ RSI bearish ({rsi:.1f})")
-            confirmations.append("✅ SMA9 < SMA21")
+        # حساب الثقة
+        confidence = min(98, 60 + len(confirmations) * 5)
         
-        # 3. التحقق من الحجم
-        if ticker['volume'] > 1000000:  # Volume كبير
-            confirmations.append("✅ High volume")
-        
-        # 4. التحقق من 24h change (لا نتداول ضد الاتجاه اليومي)
-        if signal == 'BUY' and ticker['change_24h'] < -5:
-            signal = 'HOLD'
-            confirmations.append("❌ 24h change too negative")
-        elif signal == 'SELL' and ticker['change_24h'] > 5:
-            signal = 'HOLD'
-            confirmations.append("❌ 24h change too positive")
-        
-        # 5. حساب الثقة (3+ تأكيدات = 80%+ confidence)
-        base_confidence = 50
-        base_confidence += len(confirmations) * 10
-        
-        if in_killzone:
-            base_confidence += 10
-        
-        confidence = min(95, base_confidence)
-        
-        # لا نتداول إلا بـ 3+ تأكيدات و confidence 80+
-        if signal != 'HOLD' and (len(confirmations) < 3 or confidence < 80):
-            signal = 'HOLD'
-            confirmations.append(f"⚠️ Only {len(confirmations)} confirmations - No trade")
-        
-        signal_data = {
+        return {
             'timestamp': datetime.now().isoformat(),
             'symbol': symbol,
             'timeframe': timeframe,
@@ -225,39 +379,45 @@ class AISignalBotPro:
             'rsi': round(rsi, 2),
             'sma9': round(sma9, 2) if sma9 else None,
             'sma21': round(sma21, 2) if sma21 else None,
-            'trend': trend,
-            'killzone': killzone_name,
+            'sma50': round(sma50, 2) if sma50 else None,
+            'macd': round(macd, 4) if macd else None,
+            'market_structure': market_structure,
+            'bos': bos,
+            'sweep': sweep['type'] if sweep else None,
+            'fvg_count': len(fvgs),
+            'ob_count': len(obs),
+            'order_flow': order_flow['buy_ratio'] if order_flow else None,
             'change_24h': round(ticker['change_24h'], 2),
-            'volume': ticker['volume'],
             'reasons': confirmations,
             'confirmations': len(confirmations),
-            'atr': round(atr, 2) if atr else None
+            'long_score': len(long_confirmations),
+            'short_score': len(short_confirmations)
         }
-        
-        return signal_data
     
     def print_signal(self, signal):
         """عرض الإشارة"""
         if not signal:
             return
-            
+        
         emoji = {'BUY': '🟢', 'SELL': '🔴', 'HOLD': '⚪'}.get(signal['signal'], '⚪')
         
-        print(f"\n{'='*60}")
-        print(f"{emoji} {signal['signal']} SIGNAL - {signal['symbol']}")
-        print(f"{'='*60}")
+        print(f"\n{'='*70}")
+        print(f"{emoji} {signal['signal']} SIGNAL - {signal['symbol']} (ADVANCED STRATEGY)")
+        print(f"{'='*70}")
         print(f"💰 Price: ${signal['price']:,.2f}")
         print(f"📊 Confidence: {signal['confidence']}%")
-        print(f"🎯 Confirmations: {signal['confirmations']}/5")
-        print(f"⏰ Killzone: {signal['killzone']}")
-        print(f"📈 Trend: {signal['trend']}")
+        print(f"🎯 Confirmations: {signal['confirmations']}/9 REQUIRED")
+        print(f"📈 Long Score: {signal['long_score']}/9 | Short Score: {signal['short_score']}/9")
+        print(f"📊 Market Structure: {signal['market_structure']}")
+        print(f"🔄 BOS: {signal['bos'] or 'None'}")
+        print(f"💧 Sweep: {signal['sweep'] or 'None'}")
         print(f"\n📋 Confirmations:")
         for reason in signal['reasons']:
             print(f"   {reason}")
-        print(f"{'='*60}\n")
+        print(f"{'='*70}\n")
 
 if __name__ == "__main__":
-    bot = AISignalBotPro()
+    bot = AISignalBotAdvanced()
     
     symbols = ['BTC', 'ETH', 'SOL']
     for symbol in symbols:
