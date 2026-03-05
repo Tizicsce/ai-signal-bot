@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 
 class AISignalBotPro:
-    """AI Signal Bot مع ICT Strategy + SMA"""
+    """AI Signal Bot مع ICT Strategy + SMA - محسن"""
     
     def __init__(self):
         self.binance_url = "https://api.binance.com/api/v3"
@@ -29,14 +29,13 @@ class AISignalBotPro:
             return None
     
     def get_klines(self, symbol, interval='1h', limit=200):
-        """جلب بيانات الشموع [open, high, low, close, volume]"""
+        """جلب بيانات الشموع"""
         try:
             response = requests.get(
                 f"{self.binance_url}/klines",
                 params={'symbol': f'{symbol}USDT', 'interval': interval, 'limit': limit}
             )
             data = response.json()
-            # [timestamp, open, high, low, close, volume, ...]
             candles = []
             for k in data:
                 candles.append({
@@ -53,20 +52,10 @@ class AISignalBotPro:
             return []
     
     def calculate_sma(self, prices, period):
-        """حساب Simple Moving Average (SMA)"""
+        """حساب SMA"""
         if len(prices) < period:
             return None
         return sum(prices[-period:]) / period
-    
-    def calculate_ema(self, prices, period):
-        """حساب Exponential Moving Average (EMA)"""
-        if len(prices) < period:
-            return None
-        multiplier = 2 / (period + 1)
-        ema = prices[0]
-        for price in prices[1:]:
-            ema = (price - ema) * multiplier + ema
-        return ema
     
     def calculate_rsi(self, prices, period=14):
         """حساب RSI"""
@@ -87,163 +76,71 @@ class AISignalBotPro:
         rsi = 100 - (100 / (1 + rs))
         return rsi
     
-    def detect_fvg(self, candles):
-        """
-        ICT: Fair Value Gap (FVG) Detection
-        FVG =gap بين high شمعة والlow شمعة تاليها
-        """
-        fvgs = []
-        for i in range(len(candles) - 2):
-            c1 = candles[i]   # شمعة أولى
-            c2 = candles[i+1] # شمعة وسط (الإشارة)
-            c3 = candles[i+2] # شمعة تالتة
-            
-            # Bullish FVG: low شمعة 3 > high شمعة 1
-            if c3['low'] > c1['high']:
-                fvgs.append({
-                    'type': 'Bullish',
-                    'top': c1['high'],
-                    'bottom': c3['low'],
-                    'index': i+1
-                })
-            
-            # Bearish FVG: high شمعة 3 < low شمعة 1  
-            elif c3['high'] < c1['low']:
-                fvgs.append({
-                    'type': 'Bearish',
-                    'top': c1['low'],
-                    'bottom': c3['high'],
-                    'index': i+1
-                })
-        
-        return fvgs
-    
-    def detect_order_blocks(self, candles):
-        """
-        ICT: Order Blocks (OB)
-        منطقة شراء/بيع قوية قبل حركة كبيرة
-        """
-        obs = []
-        for i in range(3, len(candles)):
-            c_current = candles[i]
-            c_prev = candles[i-1]
-            c_before = candles[i-2]
-            
-            # Bullish OB: شمعة حمراء كبيرة قبل صعود قوي
-            if (c_before['close'] < c_before['open'] and  # شمعة حمراء
-                c_current['close'] > c_current['open'] and  # شمعة خضراء
-                c_current['close'] > c_before['high']):     # اختراق
-                obs.append({
-                    'type': 'Bullish',
-                    'high': c_before['high'],
-                    'low': c_before['low'],
-                    'index': i-1
-                })
-            
-            # Bearish OB: شمعة خضراء كبيرة قبل هبوط قوي
-            elif (c_before['close'] > c_before['open'] and  # شمعة خضراء
-                  c_current['close'] < c_current['open'] and  # شمعة حمراء
-                  c_current['close'] < c_before['low']):      # كسر
-                obs.append({
-                    'type': 'Bearish',
-                    'high': c_before['high'],
-                    'low': c_before['low'],
-                    'index': i-1
-                })
-        
-        return obs
-    
-    def detect_liquidity_sweep(self, candles, lookback=10):
-        """
-        ICT: Liquidity Sweep
-        السعر يكسر high/low السابق ثم يرجع
-        """
-        if len(candles) < lookback + 2:
+    def calculate_atr(self, candles, period=14):
+        """حساب ATR (Average True Range)"""
+        if len(candles) < period + 1:
             return None
         
-        recent = candles[-lookback-1:-1]
-        current = candles[-1]
+        tr_values = []
+        for i in range(1, len(candles)):
+            high = candles[i]['high']
+            low = candles[i]['low']
+            prev_close = candles[i-1]['close']
+            
+            tr1 = high - low
+            tr2 = abs(high - prev_close)
+            tr3 = abs(low - prev_close)
+            
+            tr_values.append(max(tr1, tr2, tr3))
         
-        prev_high = max([c['high'] for c in recent])
-        prev_low = min([c['low'] for c in recent])
+        return sum(tr_values[-period:]) / period
+    
+    def check_trend(self, candles):
+        """التحقق من الاتجاه العام"""
+        if len(candles) < 50:
+            return 'NEUTRAL'
         
-        # Bullish sweep: كسر low ثم ارتداد
-        if current['low'] < prev_low and current['close'] > prev_low:
-            return {
-                'type': 'Bullish',
-                'sweep_price': current['low'],
-                'level': prev_low,
-                'confirmation': current['close'] > prev_low
-            }
+        prices = [c['close'] for c in candles]
         
-        # Bearish sweep: كسر high ثم ارتداد
-        elif current['high'] > prev_high and current['close'] < prev_high:
-            return {
-                'type': 'Bearish', 
-                'sweep_price': current['high'],
-                'level': prev_high,
-                'confirmation': current['close'] < prev_high
-            }
+        sma20 = self.calculate_sma(prices, 20)
+        sma50 = self.calculate_sma(prices, 50)
         
-        return None
+        if not sma20 or not sma50:
+            return 'NEUTRAL'
+        
+        # Higher highs and higher lows = UPTREND
+        recent_highs = [c['high'] for c in candles[-20:]]
+        recent_lows = [c['low'] for c in candles[-20:]]
+        
+        higher_highs = recent_highs[-1] > max(recent_highs[:10])
+        higher_lows = recent_lows[-1] > min(recent_lows[:10])
+        
+        if sma20 > sma50 and higher_highs and higher_lows:
+            return 'UPTREND'
+        elif sma20 < sma50 and not higher_highs and not higher_lows:
+            return 'DOWNTREND'
+        else:
+            return 'NEUTRAL'
     
     def check_killzone(self):
-        """
-        ICT: Killzones (أوقات التداول النشط)
-        London: 8:00-11:00 UTC
-        New York: 13:00-16:00 UTC
-        Asia: 0:00-4:00 UTC
-        """
+        """التحقق من Killzone"""
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
         hour = now.hour
         
+        # فقط London و NY (أعلى probability)
         if 8 <= hour < 11:
-            return "London Killzone 🏴󠁧󠁢󠁥󠁮󠁧󠁿"
+            return "London", True
         elif 13 <= hour < 16:
-            return "New York Killzone 🇺🇸"
-        elif 0 <= hour < 4:
-            return "Asia Killzone 🇯🇵"
+            return "New York", True
         else:
-            return "Low Activity ⏸️"
-    
-    def sma_crossover(self, prices):
-        """
-        SMA Crossover Strategy
-        SMA 9 و SMA 21
-        """
-        sma9 = self.calculate_sma(prices, 9)
-        sma21 = self.calculate_sma(prices, 21)
-        sma50 = self.calculate_sma(prices, 50)
-        
-        if not sma9 or not sma21 or not sma50:
-            return None, {}
-        
-        # Golden Cross: SMA9 > SMA21 > SMA50
-        # Death Cross: SMA9 < SMA21 < SMA50
-        
-        signal = None
-        if sma9 > sma21 > sma50:
-            signal = 'BULLISH_CROSS'
-        elif sma9 < sma21 < sma50:
-            signal = 'BEARISH_CROSS'
-        elif sma9 > sma21 and prices[-2] <= self.calculate_sma(prices[:-1], 9):
-            signal = 'GOLDEN_CROSS'  # تقاطع للأعلى
-        elif sma9 < sma21 and prices[-2] >= self.calculate_sma(prices[:-1], 9):
-            signal = 'DEATH_CROSS'   # تقاطع للأسفل
-        
-        return signal, {
-            'sma9': round(sma9, 2),
-            'sma21': round(sma21, 2),
-            'sma50': round(sma50, 2)
-        }
+            return "Off-Hours", False
     
     def generate_signal(self, symbol, timeframe='1h'):
-        """توليد الإشارة الكاملة مع ICT + SMA"""
+        """توليد الإشارة مع تأكيدات متعددة"""
         
-        # جلب البيانات
         ticker = self.get_price(symbol)
-        candles = self.get_klines(symbol, timeframe, 200)
+        candles = self.get_klines(symbol, timeframe, 100)
         
         if not ticker or len(candles) < 50:
             return None
@@ -251,109 +148,73 @@ class AISignalBotPro:
         prices = [c['close'] for c in candles]
         current_price = prices[-1]
         
-        # حساب المؤشرات التقليدية
+        # حساب المؤشرات
         rsi = self.calculate_rsi(prices)
+        atr = self.calculate_atr(candles)
+        trend = self.check_trend(candles)
+        killzone_name, in_killzone = self.check_killzone()
         
-        # حساب SMA Crossover
-        sma_signal, sma_data = self.sma_crossover(prices)
+        sma9 = self.calculate_sma(prices, 9)
+        sma21 = self.calculate_sma(prices, 21)
         
-        # تحليل ICT
-        fvgs = self.detect_fvg(candles[-20:])  # آخر 20 شمعة
-        obs = self.detect_order_blocks(candles[-20:])
-        sweep = self.detect_liquidity_sweep(candles)
-        killzone = self.check_killzone()
-        
-        # منطق الإشارة المتكامل
+        # قائمة التأكيدات
+        confirmations = []
         signal = 'HOLD'
-        confidence = 50
-        reasons = []
-        ict_score = 0
         
-        # 1. تحليل SMA
-        if sma_signal in ['BULLISH_CROSS', 'GOLDEN_CROSS']:
+        # 1. التحقق من Killzone (إجباري)
+        if not in_killzone:
+            return {
+                'timestamp': datetime.now().isoformat(),
+                'symbol': symbol,
+                'signal': 'HOLD',
+                'confidence': 0,
+                'price': current_price,
+                'rsi': round(rsi, 2),
+                'reasons': [f"⏰ Outside Killzone ({killzone_name}) - No trading"],
+                'confirmations': 0
+            }
+        
+        # 2. تحليل الاتجاه + RSI + SMA
+        # LONG Setup
+        if trend == 'UPTREND' and rsi < 60 and sma9 > sma21:
             signal = 'BUY'
-            confidence += 15
-            reasons.append(f"📈 SMA Golden Cross ({sma_data['sma9']} > {sma_data['sma21']})")
-            ict_score += 1
-        elif sma_signal in ['BEARISH_CROSS', 'DEATH_CROSS']:
+            confirmations.append("✅ Uptrend confirmed")
+            confirmations.append(f"✅ RSI bullish ({rsi:.1f})")
+            confirmations.append("✅ SMA9 > SMA21")
+            
+        # SHORT Setup  
+        elif trend == 'DOWNTREND' and rsi > 40 and sma9 < sma21:
             signal = 'SELL'
-            confidence += 15
-            reasons.append(f"📉 SMA Death Cross ({sma_data['sma9']} < {sma_data['sma21']})")
-            ict_score += 1
+            confirmations.append("✅ Downtrend confirmed")
+            confirmations.append(f"✅ RSI bearish ({rsi:.1f})")
+            confirmations.append("✅ SMA9 < SMA21")
         
-        # 2. تحليل RSI
-        if rsi < 30:
-            if signal == 'BUY':
-                confidence += 10
-            else:
-                signal = 'BUY'
-                confidence = 65
-            reasons.append(f"💪 RSI Oversold ({rsi:.1f})")
-        elif rsi > 70:
-            if signal == 'SELL':
-                confidence += 10
-            else:
-                signal = 'SELL'
-                confidence = 65
-            reasons.append(f"⚠️ RSI Overbought ({rsi:.1f})")
+        # 3. التحقق من الحجم
+        if ticker['volume'] > 1000000:  # Volume كبير
+            confirmations.append("✅ High volume")
         
-        # 3. تحليل ICT - FVG
-        if fvgs:
-            last_fvg = fvgs[-1]
-            if last_fvg['type'] == 'Bullish' and current_price > last_fvg['top']:
-                if signal == 'BUY':
-                    confidence += 10
-                reasons.append(f"🎯 Bullish FVG Filled")
-                ict_score += 1
-            elif last_fvg['type'] == 'Bearish' and current_price < last_fvg['bottom']:
-                if signal == 'SELL':
-                    confidence += 10
-                reasons.append(f"🎯 Bearish FVG Filled")
-                ict_score += 1
+        # 4. التحقق من 24h change (لا نتداول ضد الاتجاه اليومي)
+        if signal == 'BUY' and ticker['change_24h'] < -5:
+            signal = 'HOLD'
+            confirmations.append("❌ 24h change too negative")
+        elif signal == 'SELL' and ticker['change_24h'] > 5:
+            signal = 'HOLD'
+            confirmations.append("❌ 24h change too positive")
         
-        # 4. تحليل ICT - Order Blocks
-        if obs:
-            last_ob = obs[-1]
-            if last_ob['type'] == 'Bullish' and current_price > last_ob['high']:
-                if signal == 'BUY':
-                    confidence += 10
-                reasons.append(f"🧱 Bullish OB Breakout")
-                ict_score += 1
-            elif last_ob['type'] == 'Bearish' and current_price < last_ob['low']:
-                if signal == 'SELL':
-                    confidence += 10
-                reasons.append(f"🧱 Bearish OB Breakout")
-                ict_score += 1
+        # 5. حساب الثقة (3+ تأكيدات = 80%+ confidence)
+        base_confidence = 50
+        base_confidence += len(confirmations) * 10
         
-        # 5. تحليل ICT - Liquidity Sweep
-        if sweep:
-            if sweep['type'] == 'Bullish' and sweep['confirmation']:
-                if signal != 'SELL':
-                    signal = 'BUY'
-                    confidence += 15
-                reasons.append(f"💧 Bullish Liquidity Sweep")
-                ict_score += 2
-            elif sweep['type'] == 'Bearish' and sweep['confirmation']:
-                if signal != 'BUY':
-                    signal = 'SELL'
-                    confidence += 15
-                reasons.append(f"💧 Bearish Liquidity Sweep")
-                ict_score += 2
+        if in_killzone:
+            base_confidence += 10
         
-        # 6. Killzone bonus
-        if 'Killzone' in killzone:
-            confidence += 5
-            reasons.append(f"⏰ {killzone}")
+        confidence = min(95, base_confidence)
         
-        # 7. Volume Analysis
-        if ticker['volume'] > 1000000:
-            confidence += 5
-            reasons.append("📊 High Volume")
+        # لا نتداول إلا بـ 3+ تأكيدات و confidence 80+
+        if signal != 'HOLD' and (len(confirmations) < 3 or confidence < 80):
+            signal = 'HOLD'
+            confirmations.append(f"⚠️ Only {len(confirmations)} confirmations - No trade")
         
-        # تحديد درجة الثقة النهائية
-        confidence = min(98, confidence)
-        
-        # تجميع البيانات
         signal_data = {
             'timestamp': datetime.now().isoformat(),
             'symbol': symbol,
@@ -362,93 +223,45 @@ class AISignalBotPro:
             'confidence': confidence,
             'price': current_price,
             'rsi': round(rsi, 2),
-            'sma': sma_data,
-            'ict_score': ict_score,
-            'killzone': killzone,
-            'fvg_count': len(fvgs),
-            'ob_count': len(obs),
-            'sweep': sweep['type'] if sweep else None,
+            'sma9': round(sma9, 2) if sma9 else None,
+            'sma21': round(sma21, 2) if sma21 else None,
+            'trend': trend,
+            'killzone': killzone_name,
             'change_24h': round(ticker['change_24h'], 2),
             'volume': ticker['volume'],
-            'reasons': reasons,
-            'strategy': 'ICT + SMA Crossover'
+            'reasons': confirmations,
+            'confirmations': len(confirmations),
+            'atr': round(atr, 2) if atr else None
         }
         
-        self.signals.append(signal_data)
         return signal_data
     
     def print_signal(self, signal):
-        """عرض الإشارة بشكل جميل"""
-        emoji = {'BUY': '🟢', 'SELL': '🔴', 'HOLD': '⚪'}[signal['signal']]
+        """عرض الإشارة"""
+        if not signal:
+            return
+            
+        emoji = {'BUY': '🟢', 'SELL': '🔴', 'HOLD': '⚪'}.get(signal['signal'], '⚪')
         
         print(f"\n{'='*60}")
         print(f"{emoji} {signal['signal']} SIGNAL - {signal['symbol']}")
         print(f"{'='*60}")
         print(f"💰 Price: ${signal['price']:,.2f}")
         print(f"📊 Confidence: {signal['confidence']}%")
-        print(f"🎯 Strategy: {signal['strategy']}")
-        print(f"⏰ Timeframe: {signal['timeframe']}")
-        print(f"🕒 Killzone: {signal['killzone']}")
-        print(f"\n📈 Indicators:")
-        print(f"   RSI: {signal['rsi']}")
-        print(f"   SMA9: ${signal['sma']['sma9']:,.2f}")
-        print(f"   SMA21: ${signal['sma']['sma21']:,.2f}")
-        print(f"   SMA50: ${signal['sma']['sma50']:,.2f}")
-        print(f"\n🎯 ICT Analysis:")
-        print(f"   FVGs detected: {signal['fvg_count']}")
-        print(f"   Order Blocks: {signal['ob_count']}")
-        print(f"   Liquidity Sweep: {signal['sweep'] or 'None'}")
-        print(f"   ICT Score: {signal['ict_score']}/6")
-        print(f"\n📋 Reasons:")
+        print(f"🎯 Confirmations: {signal['confirmations']}/5")
+        print(f"⏰ Killzone: {signal['killzone']}")
+        print(f"📈 Trend: {signal['trend']}")
+        print(f"\n📋 Confirmations:")
         for reason in signal['reasons']:
-            print(f"   • {reason}")
+            print(f"   {reason}")
         print(f"{'='*60}\n")
-    
-    def monitor(self, symbols=['BTC', 'ETH', 'SOL'], interval=300):
-        """مراقبة مستمرة"""
-        print("=" * 70)
-        print("🤖 AI Signal Bot PRO - ICT + SMA Strategy")
-        print("=" * 70)
-        print("\n📚 Strategies:")
-        print("   • ICT: Fair Value Gaps, Order Blocks, Liquidity Sweeps")
-        print("   • SMA: 9/21/50 Crossover System")
-        print("   • RSI: Overbought/Oversold Confirmation")
-        print("   • Killzones: London, NY, Asia Sessions")
-        print("=" * 70)
-        
-        while True:
-            print(f"\n🔍 Scanning at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            print("-" * 70)
-            
-            for symbol in symbols:
-                signal = self.generate_signal(symbol)
-                if signal:
-                    self.print_signal(signal)
-            
-            print(f"\n⏳ Next scan in {interval}s...")
-            print("💡 Press Ctrl+C to stop")
-            time.sleep(interval)
-    
-    def scan_once(self, symbols=['BTC', 'ETH', 'SOL', 'BNB', 'XRP']):
-        """مسح لمرة واحدة"""
-        print("=" * 70)
-        print("🤖 AI Signal Bot PRO - Single Scan")
-        print("=" * 70)
-        
-        results = []
-        for symbol in symbols:
-            signal = self.generate_signal(symbol)
-            if signal:
-                self.print_signal(signal)
-                results.append(signal)
-        
-        return results
 
 if __name__ == "__main__":
     bot = AISignalBotPro()
     
-    # مسح لمرة واحدة
-    bot.scan_once()
-    
-    # للمراقبة المستمرة، شيل التعليق:
-    # bot.monitor(['BTC', 'ETH', 'SOL'], interval=300)
+    symbols = ['BTC', 'ETH', 'SOL']
+    for symbol in symbols:
+        signal = bot.generate_signal(symbol)
+        if signal:
+            bot.print_signal(signal)
+        time.sleep(1)
