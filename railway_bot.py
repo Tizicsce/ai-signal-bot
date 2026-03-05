@@ -205,14 +205,24 @@ class PaperTradingBotWithLeverage:
                 print(f"❌ {symbol}: {e}")
     
     def run_loop(self):
-        """Loop رئيسي"""
+        """Loop رئيسي - Sleep مقسم باش Railway ما يوقفش"""
         self.running = True
+        last_scan = 0
+        scan_interval = 300  # 5 minutes
+        
         self.send_telegram("🤖 <b>Paper Trading Bot Started</b>\n\n💰 Balance: $10,000\n⚡ Leverage: x5\n⏰ Scanning every 5 min")
         
         while self.running:
-            self.run_scan()
-            print("⏳ Waiting 5 min...")
-            time.sleep(300)  # 5 minutes
+            current_time = time.time()
+            
+            # إلا مرات 5 دقايق، دير Scan
+            if current_time - last_scan >= scan_interval:
+                self.run_scan()
+                last_scan = current_time
+                print("⏳ Next scan in 5 min...")
+            
+            # Sleep 30 ثانية فقط (باش Railway ما يحسبش Idle)
+            time.sleep(30)
 
 # Global bot instance
 bot_instance = None
