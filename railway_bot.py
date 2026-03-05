@@ -1,23 +1,19 @@
 import os
+import sys
 import time
 import requests
 import json
 import hashlib
 import sqlite3
-import threading
 from datetime import datetime
-from flask import Flask, request, redirect, jsonify, render_template_string
 from ai_signal_bot_pro import AISignalBotPro
-
-app = Flask(__name__)
-DATABASE = 'urls.db'
 
 # Telegram Config
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8439293396:AAHAkRFRAkgLmU17M4I8_LPXocAezDvQxE0')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '5580867960')
 
-class PaperTradingBotWithLeverage:
-    """Paper Trading Bot مع Leverage + Long/Short"""
+class PaperTradingBotCron:
+    """Paper Trading Bot - Cron Version (يشغل مرة كل 5 دقايق)"""
     
     def __init__(self, initial_balance=10000, default_leverage=5):
         self.bot = AISignalBotPro()
@@ -26,7 +22,6 @@ class PaperTradingBotWithLeverage:
         self.trade_history = []
         self.initial_balance = initial_balance
         self.default_leverage = default_leverage
-        self.running = False
         self.load_state()
     
     def send_telegram(self, message):
@@ -68,14 +63,12 @@ class PaperTradingBotWithLeverage:
         except:
             pass
     
-    def open_position(self, symbol, signal_data, leverage=None):
-        """فتح صفقة مع Leverage"""
+    def open_position(self, symbol, signal_data):
+        """فتح صفقة"""
         if symbol in self.positions:
             return False
         
-        if leverage is None:
-            leverage = self.default_leverage
-        
+        leverage = self.default_leverage
         price = signal_data['price']
         signal_type = signal_data['signal']
         
@@ -101,13 +94,12 @@ class PaperTradingBotWithLeverage:
         emoji = '🟢' if signal_type == 'BUY' else '🔴'
         direction = 'LONG' if signal_type == 'BUY' else 'SHORT'
         
-        message = f"""{emoji} <b>PAPER TRADE OPENED - {direction}</b> {emoji}
+        message = f"""{emoji} <b>TRADE OPENED - {direction}</b> {emoji}
 
-📊 <b>{symbol}</b> | {direction} x{leverage}
+📊 <b>{symbol}</b> | x{leverage}
 💰 Entry: <code>${price:,.2f}</code>
 💵 Position: ${position_value:,.2f}
 🔷 Margin: ${margin_required:,.2f}
-⚡ Leverage: x{leverage}
 
 🎯 TP1: ${tp1:,.2f} | TP2: ${tp2:,.2f} | TP3: ${tp3:,.2f}
 🛑 SL: ${sl:,.2f}
@@ -116,7 +108,6 @@ class PaperTradingBotWithLeverage:
 ⏰ {datetime.now().strftime('%H:%M:%S')}"""
         
         self.send_telegram(message)
-        print(f"🟢 OPENED {direction} {symbol} x{leverage}")
         self.save_state()
         return True
     
@@ -145,18 +136,16 @@ class PaperTradingBotWithLeverage:
         
         message = f"""{emoji} <b>CLOSED - {direction}</b> {emoji}
 
-📊 {symbol} | {direction} x{leverage}
+📊 {symbol} | x{leverage}
 🔔 {reason}
-
-💰 Entry: ${entry:,.2f} → Exit: ${exit_price:,.2f}
-📊 Change: {price_change_pct*100:+.2f}% → {leveraged_change_pct*100:+.2f}%
+💰 ${entry:,.2f} → ${exit_price:,.2f}
+📊 {leveraged_change_pct*100:+.2f}%
 💵 P&L: ${pnl:,.2f}
 
 💼 Balance: ${self.balance:,.2f}
 📈 Total: ${self.balance - self.initial_balance:+.2f}"""
         
         self.send_telegram(message)
-        print(f"{emoji} CLOSED {symbol} P&L: ${pnl:.2f}")
         del self.positions[symbol]
         self.save_state()
     
@@ -179,17 +168,20 @@ class PaperTradingBotWithLeverage:
             elif current_price <= pos['tp3']:
                 self.close_position(symbol, current_price, 'TP3')
     
-    def run_scan(self):
-        """مسح واحد"""
+    def run_once(self):
+        """تشغيل مرة واحدة (لـ Cron Job)"""
+        print(f"🔍 {datetime.now().strftime('%H:%M:%S')} - Starting scan...")
+        
         symbols = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP']
-        print(f"\n🔍 {datetime.now().strftime('%H:%M:%S')}")
         
         for symbol in symbols:
             try:
+                # Check positions
                 price_data = self.bot.get_price(symbol)
                 if price_data:
                     self.check_positions(symbol, price_data['price'])
                 
+                # Generate signal
                 signal = self.bot.generate_signal(symbol)
                 if not signal:
                     continue
@@ -197,79 +189,18 @@ class PaperTradingBotWithLeverage:
                 direction = 'LONG' if signal['signal'] == 'BUY' else 'SHORT' if signal['signal'] == 'SELL' else 'HOLD'
                 print(f"{symbol}: {direction} ({signal['confidence']}%)")
                 
+                # Open position if strong signal
                 if signal['signal'] in ['BUY', 'SELL'] and signal['confidence'] >= 60:
                     if symbol not in self.positions:
-                        self.open_position(symbol, signal, self.default_leverage)
+                        self.open_position(symbol, signal)
                 
             except Exception as e:
                 print(f"❌ {symbol}: {e}")
-    
-    def run_loop(self):
-        """Loop رئيسي - Sleep مقسم باش Railway ما يوقفش"""
-        self.running = True
-        last_scan = 0
-        scan_interval = 300  # 5 minutes
         
-        self.send_telegram("🤖 <b>Paper Trading Bot Started</b>\n\n💰 Balance: $10,000\n⚡ Leverage: x5\n⏰ Scanning every 5 min")
-        
-        while self.running:
-            current_time = time.time()
-            
-            # إلا مرات 5 دقايق، دير Scan
-            if current_time - last_scan >= scan_interval:
-                self.run_scan()
-                last_scan = current_time
-                print("⏳ Next scan in 5 min...")
-            
-            # Sleep 30 ثانية فقط (باش Railway ما يحسبش Idle)
-            time.sleep(30)
-
-# Global bot instance
-bot_instance = None
-
-def start_bot():
-    """Start bot in background thread"""
-    global bot_instance
-    bot_instance = PaperTradingBotWithLeverage(initial_balance=10000, default_leverage=5)
-    bot_instance.run_loop()
-
-# ========== FLASK ROUTES ==========
-
-@app.route('/')
-def index():
-    """Health check + status"""
-    global bot_instance
-    status = {
-        'status': 'running' if bot_instance and bot_instance.running else 'stopped',
-        'time': datetime.now().isoformat(),
-        'balance': bot_instance.balance if bot_instance else 10000,
-        'positions': len(bot_instance.positions) if bot_instance else 0
-    }
-    return jsonify(status)
-
-@app.route('/health')
-def health():
-    """Simple health check"""
-    return jsonify({
-        'status': 'alive',
-        'time': datetime.now().isoformat(),
-        'bot_running': bot_instance.running if bot_instance else False
-    })
-
-@app.route('/scan', methods=['POST'])
-def manual_scan():
-    """Manual scan trigger"""
-    global bot_instance
-    if bot_instance:
-        bot_instance.run_scan()
-        return jsonify({'status': 'scan completed'})
-    return jsonify({'status': 'bot not running'}), 500
+        print(f"✅ Scan complete. Positions: {len(self.positions)}")
+        print(f"💰 Balance: ${self.balance:,.2f}")
 
 if __name__ == '__main__':
-    # Start bot in background thread
-    bot_thread = threading.Thread(target=start_bot, daemon=True)
-    bot_thread.start()
-    
-    # Start Flask
-    port = int(os.getenv('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, threaded=True)
+    bot = PaperTradingBotCron()
+    bot.run_once()
+    print("🏁 Done!")
