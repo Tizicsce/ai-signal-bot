@@ -5,8 +5,13 @@ import requests
 import json
 import hashlib
 import sqlite3
+import threading
+from flask import Flask
 from datetime import datetime
 from ai_signal_bot_pro import AISignalBotPro
+
+# Flask App for Keep-Alive
+app = Flask(__name__)
 
 # Telegram Config
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8439293396:AAHAkRFRAkgLmU17M4I8_LPXocAezDvQxE0')
@@ -200,7 +205,65 @@ class PaperTradingBotCron:
         print(f"✅ Scan complete. Positions: {len(self.positions)}")
         print(f"💰 Balance: ${self.balance:,.2f}")
 
+# Flask Routes for Keep-Alive
+@app.route('/')
+def home():
+    return {
+        "status": "alive",
+        "bot": "AI Signal Bot - Paper Trading",
+        "time": datetime.now().isoformat(),
+        "version": "2.0"
+    }
+
+@app.route('/health')
+def health():
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+@app.route('/status')
+def status():
+    """Get current trading status"""
+    try:
+        bot = PaperTradingBotCron()
+        return {
+            "balance": bot.balance,
+            "positions": len(bot.positions),
+            "open_positions": list(bot.positions.keys()),
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {"error": str(e)}, 500
+
 if __name__ == '__main__':
+    # Create bot instance
     bot = PaperTradingBotCron()
-    bot.run_once()
-    print("🏁 Done!")
+    
+    # Function to run trading in background
+    def run_trading_loop():
+        print("🤖 Starting trading loop...")
+        while True:
+            try:
+                bot.run_once()
+                print(f"⏳ Sleeping 5 minutes...")
+                time.sleep(300)  # 5 minutes
+            except Exception as e:
+                print(f"❌ Error in trading loop: {e}")
+                time.sleep(60)  # Wait 1 min on error
+    
+    # Start trading in background thread
+    trading_thread = threading.Thread(target=run_trading_loop, daemon=True)
+    trading_thread.start()
+    
+    # Send startup message
+    bot.send_telegram("""🚀 <b>AI Signal Bot Started</b>
+
+🤖 Mode: Paper Trading + Leverage
+⚡ Leverage: x5
+📊 Symbols: BTC, ETH, SOL, BNB, XRP
+⏰ Scan Interval: 5 minutes
+
+<i>📝 Bot is now running and monitoring markets...</i>""")
+    
+    # Start Flask server (keeps Railway alive)
+    print("🌐 Starting keep-alive server on port 5000...")
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
